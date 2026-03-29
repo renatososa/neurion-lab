@@ -1,27 +1,27 @@
 # Neurion LAB
 
-Neurion LAB is an open, modular biopotential acquisition platform for education, prototyping, and experimentation. This repository groups the embedded firmware, desktop GUI, hardware assets, and supporting documentation used by the current prototype.
+Neurion LAB es una plataforma abierta y modular de adquisicion de biopotenciales orientada a educacion, prototipado y experimentacion. Este repositorio agrupa el firmware embebido, la GUI de escritorio, los activos de hardware y la documentacion de soporte del prototipo actual.
 
-## Repository structure
+## Estructura del repositorio
 
-- `firmware/`: ESP32-S3 and ADS1299 acquisition firmware
-- `gui/`: desktop GUI for configuration, monitoring, and data capture
-- `hardware/pcb/`: PCB design files and manufacturing assets
-- `hardware/carcasa/`: enclosure files, renders, and printable models
-- `docs/`: project documentation and supporting images
+- `firmware/`: firmware de adquisicion basado en ESP32-S3 y ADS1299
+- `gui/`: aplicacion de escritorio para configuracion, monitoreo y captura de datos
+- `hardware/pcb/`: archivos de diseno de PCB y activos de manufactura
+- `hardware/carcasa/`: archivos de carcasa, renders y modelos imprimibles
+- `docs/`: documentacion del proyecto e imagenes de apoyo
 
-## Current status
+## Estado actual
 
-The current prototype includes:
+El prototipo actual incluye:
 
-- custom modular electronics
-- ESP32-S3 firmware
-- ADS1299-based biopotential acquisition
-- desktop GUI for configuration and live signal visualization
-- experimental ECG validation
+- electronica modular propia
+- firmware para ESP32-S3
+- adquisicion de biopotenciales basada en ADS1299
+- GUI de escritorio para configuracion y visualizacion de senales en vivo
+- validacion experimental con ECG
 
-## Licensing
+## Licencias
 
-- Software in `firmware/` and `gui/`: MIT. See `LICENSE` and `LICENSE-software`.
-- Hardware designs in `hardware/`: CERN-OHL-S v2. See `LICENSE-hardware`.
-- Documentation in `docs/`: CC BY 4.0. See `LICENSE-docs`.
+- Software en `firmware/` y `gui/`: MIT. Ver `LICENSE` y `LICENSE-software`.
+- Disenos de hardware en `hardware/`: CERN-OHL-S v2. Ver `LICENSE-hardware`.
+- Documentacion en `docs/`: CC BY 4.0. Ver `LICENSE-docs`.

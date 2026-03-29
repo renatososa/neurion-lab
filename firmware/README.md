@@ -1,10 +1,10 @@
-# Neurion ESP32-S3 + ADS1299 Firmware
+# Firmware Neurion ESP32-S3 + ADS1299
 
-Firmware de adquisicion multicanal para ESP32-S3 con hasta 4 ADS1299, configuracion persistente, streaming UDP y hooks para extender el procesamiento sin modificar el nucleo principal.
+Firmware de adquisicion multicanal para ESP32-S3 con soporte para hasta 4 ADS1299, configuracion persistente, streaming UDP y puntos de extension para ampliar el procesamiento sin modificar el nucleo principal.
 
 ## Caracteristicas principales
 
-- Soporte para hasta 4 ADS1299 sobre SPI compartido, sincronizados por `START`.
+- Soporte para hasta 4 ADS1299 sobre un SPI compartido, sincronizados mediante `START`.
 - Streaming UDP de bloques de muestras hacia la GUI de PC.
 - Configuracion por canal y bias con persistencia en NVS.
 - Indicacion de estado con LED y monitoreo de bateria por ADC.
@@ -24,13 +24,13 @@ Firmware de adquisicion multicanal para ESP32-S3 con hasta 4 ADS1299, configurac
 
 ## Flujo general
 
-1. `setup()` inicializa LED, ADS, filtros y configuracion persistente.
+1. `setup()` inicializa el LED, los ADS, los filtros y la configuracion persistente.
 2. Se aplica la configuracion al hardware y se levanta la comunicacion WiFi/UDP.
 3. El loop procesa comandos, actualiza estado de bateria y transmite muestras cuando corresponde.
 
 ## Comandos UDP
 
-Los comandos entran por `PC_UDP_PORT` y reciben respuestas `OK ...` o `ERR ...`.
+Los comandos ingresan por `PC_UDP_PORT` y reciben respuestas `OK ...` o `ERR ...`.
 
 - `CONNECT`
 - `CH <dev> <ch> <gain> <powerDown> <test>`
@@ -44,5 +44,5 @@ Los comandos entran por `PC_UDP_PORT` y reciben respuestas `OK ...` o `ERR ...`.
 ## Notas
 
 - El filtrado actual es basico y sigue marcado como placeholder.
-- `config_pins.h` debe ajustarse al hardware y red reales antes de desplegar.
+- `config_pins.h` debe ajustarse al hardware y a la red reales antes de desplegar.
 - Si un ADS no responde a tiempo, el firmware registra la condicion y continua operando.
