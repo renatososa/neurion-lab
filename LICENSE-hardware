@@ -1,0 +1,8 @@
+Hardware design files in `hardware/` are intended to be released under the
+CERN Open Hardware Licence Version 2 - Strongly Reciprocal.
+
+Short identifier: CERN-OHL-S-2.0
+Reference: https://ohwr.org/cern_ohl_s_v2.txt
+
+Before external release, ensure all hardware source files include the
+appropriate license notice if required by your publication workflow.

@@ -1,0 +1,27 @@
+; NeurionLab_CDC.inf
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Ports
+ClassGuid   = {4D36E978-E325-11CE-BFC1-08002BE10318}
+Provider    = %MFG%
+DriverVer   = 12/14/2025,1.0.0.0
+
+[Manufacturer]
+%MFG% = Models,NTamd64
+
+[Models.NTamd64]
+%DeviceDesc% = USBSer_Install, USB\VID_303A&PID_1001&MI_00
+
+[USBSer_Install.NT]
+Include = usbser.inf
+Needs   = UsbSer_Install
+
+[USBSer_Install.NT.HW]
+AddReg = Neurion.AddReg
+
+[Neurion.AddReg]
+HKR,,FriendlyName,0x00000000,"%DeviceDesc%"
+
+[Strings]
+MFG        = "Neurion"
+DeviceDesc = "Neurion Lab USB Serial"

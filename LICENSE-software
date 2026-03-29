@@ -1,0 +1,6 @@
+Software in `firmware/` and `gui/` is released under the MIT License.
+
+The canonical MIT license text for this repository is provided in the top-level
+`LICENSE` file.
+
+SPDX-License-Identifier: MIT

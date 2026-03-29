@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Logs and generated captures
+*.log
+*.csv
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Arduino / build
+build/
+*.elf
+*.bin
+
+# Temporary
+*.tmp
+*.bak
+
+# Local scratch files
+/gui/Sin*0.py
