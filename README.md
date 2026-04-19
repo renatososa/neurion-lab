@@ -4,7 +4,7 @@ Neurion LAB es una plataforma abierta y modular de adquisicion de biopotenciales
 
 ## Estructura del repositorio
 
-- `firmware/`: firmware de adquisicion basado en ESP32-S3 y ADS1299
+- `firmware/neurion/`: sketch y modulos del firmware de adquisicion basado en ESP32-S3 y ADS1299
 - `gui/`: aplicacion de escritorio para configuracion, monitoreo y captura de datos
 - `hardware/pcb/`: archivos de diseno de PCB y activos de manufactura
 - `hardware/carcasa/`: archivos de carcasa, renders y modelos imprimibles
@@ -22,6 +22,6 @@ El prototipo actual incluye:
 
 ## Licencias
 
-- Software en `firmware/` y `gui/`: MIT. Ver `LICENSE` y `LICENSE-software`.
+- Software en `firmware/neurion/` y `gui/`: MIT. Ver `LICENSE` y `LICENSE-software`.
 - Disenos de hardware en `hardware/`: CERN-OHL-S v2. Ver `LICENSE-hardware`.
 - Documentacion en `docs/`: CC BY 4.0. Ver `LICENSE-docs`.

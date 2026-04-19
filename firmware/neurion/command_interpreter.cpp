@@ -1,10 +1,13 @@
 #include "command_interpreter.h"
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include "wifi_comm.h"
 #include "config_pins.h"
 #include "filtering.h"
+#include "battery_monitor.h"
+#include <WiFi.h>
 
 // Variables de ploteo definidas en neurion.ino
 extern bool    g_plotEnable;
@@ -17,6 +20,60 @@ extern bool   g_serialWifiUpdated;
 
 static bool isValidGain(uint8_t g) {
     return g == 1 || g == 2 || g == 4 || g == 6 || g == 8 || g == 12 || g == 24;
+}
+
+static bool parseFilterProfile(const char* text, FilterProfile& outProfile) {
+    if (!text) return false;
+    if (strcasecmp(text, "ECG") == 0) { outProfile = FILTER_PROFILE_ECG; return true; }
+    if (strcasecmp(text, "EOG") == 0) { outProfile = FILTER_PROFILE_EOG; return true; }
+    if (strcasecmp(text, "EMG") == 0) { outProfile = FILTER_PROFILE_EMG; return true; }
+    if (strcasecmp(text, "EEG") == 0) { outProfile = FILTER_PROFILE_EEG; return true; }
+    return false;
+}
+
+static void skipWhitespace(char*& p) {
+    while (*p == ' ' || *p == '\t') ++p;
+}
+
+static bool parseWifiToken(char*& p, char* out, size_t outSize) {
+    if (!out || outSize == 0) return false;
+    skipWhitespace(p);
+    if (*p == '\0') return false;
+
+    size_t len = 0;
+    bool quoted = false;
+    if (*p == '"') {
+        quoted = true;
+        ++p;
+        while (*p && *p != '"') {
+            char c = *p++;
+            if (c == '\\' && (*p == '"' || *p == '\\')) {
+                c = *p++;
+            }
+            if (len < outSize - 1) out[len++] = c;
+        }
+        if (*p != '"') return false;
+        ++p;
+    } else {
+        while (*p && *p != ' ' && *p != '\t') {
+            if (len < outSize - 1) out[len++] = *p;
+            ++p;
+        }
+    }
+    out[len] = '\0';
+    return quoted || len > 0;
+}
+
+static const char* wifiSignalBars(int32_t rssi) {
+    if (rssi >= -55) return "[||||]";
+    if (rssi >= -67) return "[||| ]";
+    if (rssi >= -75) return "[||  ]";
+    if (rssi >= -85) return "[|   ]";
+    return "[    ]";
+}
+
+static bool wifiIsOpen(wifi_auth_mode_t mode) {
+    return mode == WIFI_AUTH_OPEN;
 }
 
 static void respond(const CommandCallbacks& cbs, const char* msg) {
@@ -38,38 +95,36 @@ bool commandInterpreter_handleLine(
     while (*line == ' ' || *line == '\t') ++line;
     if (!*line) return false;
 
-    // SET_WIFI: mantiene password con espacios
+    // SET_WIFI: soporta comillas para SSID/password con espacios
     if (strncmp(line, "SET_WIFI", 8) == 0 || strncmp(line, "set_wifi", 8) == 0) {
         char* p = line + 8;
-        while (*p == ' ' || *p == '\t') ++p;
-        if (*p == '\0') { respond(cbs, "ERR WIFI"); return true; }
-        char* ssidStart = p;
-        while (*p && *p != ' ' && *p != '\t') ++p;
-        size_t ssidLen = p - ssidStart;
-        while (*p == ' ' || *p == '\t') ++p;
-        char* pwdStart = p;
-        size_t pwdLen = strlen(pwdStart);
-        if (ssidLen == 0 || pwdLen == 0) { respond(cbs, "ERR WIFI"); return true; }
         char ssidBuf[64];
         char pwdBuf[64];
-        if (ssidLen >= sizeof(ssidBuf)) ssidLen = sizeof(ssidBuf) - 1;
-        if (pwdLen >= sizeof(pwdBuf)) pwdLen = sizeof(pwdBuf) - 1;
-        strncpy(ssidBuf, ssidStart, ssidLen);
-        ssidBuf[ssidLen] = '\0';
-        strncpy(pwdBuf, pwdStart, pwdLen);
-        pwdBuf[pwdLen] = '\0';
+        if (!parseWifiToken(p, ssidBuf, sizeof(ssidBuf)) ||
+            !parseWifiToken(p, pwdBuf, sizeof(pwdBuf))) {
+            respond(cbs, "ERR WIFI FORMAT Usa SET_WIFI \"ssid\" \"password\"; para red abierta usa \"\"");
+            return true;
+        }
+        skipWhitespace(p);
+        if (*p != '\0') {
+            respond(cbs, "ERR WIFI FORMAT Usa SET_WIFI \"ssid\" \"password\"; para red abierta usa \"\"");
+            return true;
+        }
 
         g_serialWifiSsid     = ssidBuf;
         g_serialWifiPassword = pwdBuf;
-        IPAddress ip;
-        if (wifiComm_connectSta(ssidBuf, pwdBuf, ip)) {
+        IPAddress staIp;
+        IPAddress apIp;
+        String wifiErr;
+        if (wifiComm_connectStaKeepAp(ssidBuf, pwdBuf, staIp, &apIp, &wifiErr)) {
             wifiComm_saveCredentials(ssidBuf, pwdBuf);
             g_serialWifiUpdated = true;
-            String msg = "OK WIFI " + ip.toString();
+            String msg = "OK WIFI STA " + staIp.toString() + " AP " + apIp.toString();
             respond(cbs, msg.c_str());
         } else {
             g_serialWifiUpdated = false;
-            respond(cbs, "ERR WIFI");
+            if (wifiErr.length() == 0) wifiErr = "ERR WIFI";
+            respond(cbs, wifiErr.c_str());
         }
         return true;
     }
@@ -94,29 +149,53 @@ bool commandInterpreter_handleLine(
         if (c == 'x') { changeStateFn(STATE_ERROR); respond(cbs, "OK STATE ERROR"); return true; }
     }
 
-    // Handshake/red de UDP (antes de chequear STATE_ERROR)
+    const bool stateLocked = (currentState == STATE_ERROR || currentState == STATE_BATTERY_LOW);
+
+    // Handshake/red de UDP
     if (strcmp(tokens[0], "START") == 0) {
+        if (stateLocked) {
+            respond(cbs, "ERR STATE");
+            return true;
+        }
         if (cbs.onStart) cbs.onStart(cbs.userCtx);
         respond(cbs, "OK START");
         return true;
     }
     if (strcmp(tokens[0], "STOP") == 0) {
+        if (stateLocked) {
+            respond(cbs, "ERR STATE");
+            return true;
+        }
         if (cbs.onStop) cbs.onStop(cbs.userCtx);
         respond(cbs, "OK STOP");
         return true;
     }
     if (strcmp(tokens[0], "CONNECTIVITY") == 0) {
+        if (stateLocked) {
+            respond(cbs, "ERR STATE");
+            return true;
+        }
         if (cbs.onConnectivity) cbs.onConnectivity(cbs.userCtx);
         respond(cbs, "OK CONNECTIVITY");
         return true;
     }
     if (strcmp(tokens[0], "DISCOVERY_REPLY") == 0 && ntok >= 2) {
+        if (stateLocked) {
+            respond(cbs, "ERR STATE");
+            return true;
+        }
         if (cbs.onDiscoveryReply) {
             bool ok = cbs.onDiscoveryReply(tokens[1], cbs.userCtx);
             respond(cbs, ok ? "OK DISCOVERY" : "ERR DISCOVERY");
         } else {
             respond(cbs, "ERR DISCOVERY");
         }
+        return true;
+    }
+    if (strcmp(tokens[0], "BATT") == 0) {
+        char msg[24];
+        snprintf(msg, sizeof(msg), "OK BATT %u", batteryMonitor_readLevelByte());
+        respond(cbs, msg);
         return true;
     }
 
@@ -143,6 +222,20 @@ bool commandInterpreter_handleLine(
         ads.setChannelConfig(dev, ch, chCfg);
         configDirty = true;
         respond(cbs, "OK CH");
+        return true;
+    }
+    if (strcmp(tokens[0], "FILTER") == 0 && ntok >= 4) {
+        uint8_t dev = (uint8_t)atoi(tokens[1]);
+        uint8_t ch  = (uint8_t)atoi(tokens[2]);
+        FilterProfile profile = FILTER_PROFILE_ECG;
+        if (dev >= cfg.numDevices || dev >= numAds || ch >= ADS_NUM_CHANNELS || !parseFilterProfile(tokens[3], profile)) {
+            respond(cbs, "ERR FILTER");
+            return true;
+        }
+        cfg.dev[dev].ch[ch].filterProfile = profile;
+        filtering_setChannelProfile(dev, ch, profile);
+        configDirty = true;
+        respond(cbs, "OK FILTER");
         return true;
     }
     if (strcmp(tokens[0], "BIAS") == 0 && ntok >= 4) {
@@ -253,6 +346,11 @@ bool commandInterpreter_handleLine(
                         char line[32];
                         snprintf(line, sizeof(line), "CH%uSET = 0x%02X\n", ch + 1, v);
                         msg += line;
+                        msg += "CH";
+                        msg += String(ch + 1);
+                        msg += "FILTER = ";
+                        msg += filtering_getProfileName(cfg.dev[d].ch[ch].filterProfile);
+                        msg += "\n";
                     }
                 }
                 if (msg.length() == 0) {
@@ -293,6 +391,52 @@ bool commandInterpreter_handleLine(
             respond(cbs, msg.c_str());
         } else {
             respond(cbs, "ERR AP");
+        }
+        return true;
+    }
+    if (strcmp(tokens[0], "SCAN_WIFI") == 0 || strcmp(tokens[0], "scan_wifi") == 0) {
+        wifi_mode_t prevMode = WiFi.getMode();
+        bool restoreMode = false;
+
+        if (prevMode == WIFI_AP) {
+            WiFi.mode(WIFI_AP_STA);
+            restoreMode = true;
+            delay(100);
+        } else if (prevMode == WIFI_MODE_NULL) {
+            WiFi.mode(WIFI_STA);
+            restoreMode = true;
+            delay(100);
+        }
+
+        int networks = WiFi.scanNetworks(false, true);
+        if (networks < 0) {
+            WiFi.scanDelete();
+            if (restoreMode) {
+                WiFi.mode(prevMode);
+            }
+            respond(cbs, "ERR SCAN_WIFI");
+            return true;
+        }
+
+        String header = String("OK SCAN_WIFI ") + networks;
+        respond(cbs, header.c_str());
+        if (networks == 0) {
+            respond(cbs, "No se encontraron redes visibles.");
+        } else {
+            for (int i = 0; i < networks; ++i) {
+                String ssid = WiFi.SSID(i);
+                if (ssid.length() == 0) ssid = "<oculta>";
+                wifi_auth_mode_t auth = WiFi.encryptionType(i);
+                String line = String(i + 1) + ". " + ssid + " " + wifiSignalBars(WiFi.RSSI(i));
+                if (wifiIsOpen(auth)) {
+                    line += " abierta";
+                }
+                respond(cbs, line.c_str());
+            }
+        }
+        WiFi.scanDelete();
+        if (restoreMode) {
+            WiFi.mode(prevMode);
         }
         return true;
     }

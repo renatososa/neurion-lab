@@ -39,11 +39,13 @@ bool wifiComm_hasDestination();
 
 // No se fija IP por defecto; se usa la que llegue en el primer comando UDP.
 
-// Helpers para comandos seriales: conectar en modo STA o volver a modo AP
-bool wifiComm_connectSta(const char* ssid, const char* password, IPAddress& outIp);
+// Helpers para cambiar entre conectividad STA/AP desde serial o UDP
+bool wifiComm_connectSta(const char* ssid, const char* password, IPAddress& outIp, String* outError = nullptr);
+bool wifiComm_connectStaKeepAp(const char* ssid, const char* password, IPAddress& outStaIp, IPAddress* outApIp = nullptr, String* outError = nullptr);
 bool wifiComm_startAp(IPAddress& outIp);
 bool wifiComm_saveCredentials(const String& ssid, const String& password);
 bool wifiComm_loadCredentials(String& ssid, String& password);
+bool wifiComm_clearCredentials();
 void wifiComm_sendDiscovery(const IPAddress& ip);
 void wifiComm_beginDiscoveryBeacon(const IPAddress& ip, uint32_t durationMs = 5000);
 void wifiComm_tick();
@@ -52,4 +54,4 @@ bool wifiComm_hasClient(IPAddress& outIp);
 bool wifiComm_takeStartRequest();
 bool wifiComm_takeStopRequest();
 bool wifiComm_takeConnRequest();
-void wifiComm_sendConfigSnapshot(const AdsPersistentConfig& cfg, uint8_t numDevices);
+void wifiComm_sendConfigSnapshot(const AdsPersistentConfig& cfg, uint8_t numDevices, DeviceState currentState, bool factoryModeActive);

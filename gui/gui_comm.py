@@ -133,6 +133,34 @@ def send_udp_command(
             return None
 
 
+def send_udp_command_collect(
+    device_ip: str,
+    command: str,
+    port: int = PC_UDP_PORT,
+    timeout: float = 1.0,
+    idle_timeout: float = 0.35,
+    bufsize: int = 1024,
+    max_packets: int = 64,
+) -> List[str]:
+    """Envía un comando UDP y recopila múltiples respuestas hasta agotar el tiempo o quedar idle."""
+    if not device_ip:
+        return []
+    responses: List[str] = []
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.settimeout(timeout)
+            sock.sendto(command.encode("utf-8", errors="ignore"), (device_ip, port))
+            while len(responses) < max_packets:
+                data, _ = sock.recvfrom(bufsize)
+                text = data.decode("utf-8", errors="ignore").strip()
+                if text:
+                    responses.append(text)
+                sock.settimeout(idle_timeout)
+        except Exception:
+            pass
+    return responses
+
+
 def send_udp_bytes(
     device_ip: str,
     payload: bytes,
@@ -166,6 +194,7 @@ __all__ = [
     "create_udp_socket",
     "start_discovery_socket",
     "send_udp_command",
+    "send_udp_command_collect",
     "send_udp_bytes",
     "close_socket",
 ]

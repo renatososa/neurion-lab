@@ -81,7 +81,7 @@ class ConsoleManager:
             return
         self.log_toggle.blockSignals(True)
         self.log_toggle.setChecked(recording)
-        self.log_toggle.setText("Grabando..." if recording else "Grabar")
+        self.log_toggle.setText("Grabando..." if recording else "Grabar CSV")
         self.log_toggle.blockSignals(False)
 
     def start_logging(self, path: Optional[str] = None) -> bool:

@@ -26,6 +26,11 @@ static bool s_startRequested = false;
 static bool s_stopRequested  = false;
 static bool s_connRequested  = false;
 static uint8_t s_packetCounter = 0;
+static int16_t s_lastGoodPacked[ADS_MAX_DEVICES][ADS_NUM_CHANNELS] = {{0}};
+static bool s_hasLastGoodPacked[ADS_MAX_DEVICES][ADS_NUM_CHANNELS] = {{false}};
+static bool s_holdPackedActive[ADS_MAX_DEVICES][ADS_NUM_CHANNELS] = {{false}};
+static int16_t s_holdPackedRef[ADS_MAX_DEVICES][ADS_NUM_CHANNELS] = {{0}};
+static uint8_t s_holdPackedRecoveryCount[ADS_MAX_DEVICES][ADS_NUM_CHANNELS] = {{0}};
 static bool isValidGain(uint8_t g);
 static constexpr float VREF_VOLTS = 4.5f;
 // Paso base en uV que se divide por la ganancia efectiva del canal.
@@ -33,8 +38,112 @@ static constexpr float BASE_UV_PER_GAIN = 24.0f;
 // Factor para pasar de cuentas ADS (24 bits sign-extendidas) a unidades empacadas int16.
 // packed = counts * COUNTS_TO_PACKED, donde cada LSB representa (BASE_UV_PER_GAIN / gain) uV en el receptor.
 static constexpr float COUNTS_TO_PACKED = (VREF_VOLTS * 1e6f) / (8388607.0f * BASE_UV_PER_GAIN);
+static constexpr int32_t PACKED_SAT_THRESHOLD = 32000;
+static constexpr int32_t PACKED_SPIKE_THRESHOLD = 20000;
+static constexpr int32_t PACKED_RECOVERY_THRESHOLD = 4000;
+static constexpr uint8_t PACKED_RECOVERY_REQUIRED = 3;
+
+static void resetPackedGuards() {
+    memset(s_lastGoodPacked, 0, sizeof(s_lastGoodPacked));
+    memset(s_hasLastGoodPacked, 0, sizeof(s_hasLastGoodPacked));
+    memset(s_holdPackedActive, 0, sizeof(s_holdPackedActive));
+    memset(s_holdPackedRef, 0, sizeof(s_holdPackedRef));
+    memset(s_holdPackedRecoveryCount, 0, sizeof(s_holdPackedRecoveryCount));
+}
+
+static int16_t sanitizePackedSample(uint8_t dev, uint8_t ch, int32_t q) {
+    if (dev >= ADS_MAX_DEVICES || ch >= ADS_NUM_CHANNELS) {
+        if (q > INT16_MAX) q = INT16_MAX;
+        else if (q < INT16_MIN) q = INT16_MIN;
+        return (int16_t)q;
+    }
+
+    const bool hasRef = s_hasLastGoodPacked[dev][ch];
+    const int16_t ref = s_holdPackedActive[dev][ch] ? s_holdPackedRef[dev][ch] : s_lastGoodPacked[dev][ch];
+
+    if (abs(q) >= PACKED_SAT_THRESHOLD) {
+        if (hasRef) {
+            s_holdPackedActive[dev][ch] = true;
+            s_holdPackedRef[dev][ch] = ref;
+            s_holdPackedRecoveryCount[dev][ch] = 0;
+            return ref;
+        }
+        if (q > INT16_MAX) q = INT16_MAX;
+        else if (q < INT16_MIN) q = INT16_MIN;
+        return (int16_t)q;
+    }
+
+    if (hasRef && abs(q - (int32_t)ref) >= PACKED_SPIKE_THRESHOLD) {
+        s_holdPackedActive[dev][ch] = true;
+        s_holdPackedRef[dev][ch] = ref;
+        s_holdPackedRecoveryCount[dev][ch] = 0;
+        return ref;
+    }
+
+    if (s_holdPackedActive[dev][ch]) {
+        if (abs(q - (int32_t)s_holdPackedRef[dev][ch]) <= PACKED_RECOVERY_THRESHOLD) {
+            s_holdPackedRecoveryCount[dev][ch]++;
+            if (s_holdPackedRecoveryCount[dev][ch] < PACKED_RECOVERY_REQUIRED) {
+                return s_holdPackedRef[dev][ch];
+            }
+            s_holdPackedActive[dev][ch] = false;
+            s_holdPackedRecoveryCount[dev][ch] = 0;
+        } else {
+            s_holdPackedRecoveryCount[dev][ch] = 0;
+            return s_holdPackedRef[dev][ch];
+        }
+    }
+
+    if (q > INT16_MAX) q = INT16_MAX;
+    else if (q < INT16_MIN) q = INT16_MIN;
+    int16_t packed = (int16_t)q;
+    s_lastGoodPacked[dev][ch] = packed;
+    s_hasLastGoodPacked[dev][ch] = true;
+    return packed;
+}
+
+static String wifiStatusDetail(wl_status_t status) {
+    switch (status) {
+        case WL_NO_SSID_AVAIL:
+            return "ERR WIFI SSID_NO_VISIBLE Verifica nombre exacto, alcance y red 2.4GHz";
+        case WL_CONNECT_FAILED:
+            return "ERR WIFI AUTH Fallo de autenticacion; revisa password o tipo de seguridad";
+#ifdef WL_WRONG_PASSWORD
+        case WL_WRONG_PASSWORD:
+            return "ERR WIFI WRONG_PASSWORD La password parece incorrecta";
+#endif
+        case WL_CONNECTION_LOST:
+            return "ERR WIFI CONNECTION_LOST Se perdio la conexion durante la asociacion";
+        case WL_DISCONNECTED:
+            return "ERR WIFI TIMEOUT No logro asociarse; revisa hotspot, senal o credenciales";
+        case WL_IDLE_STATUS:
+            return "ERR WIFI TIMEOUT El modulo quedo esperando asociacion";
+        default:
+            return String("ERR WIFI STATUS_") + (int)status + " Fallo al conectar en modo STA";
+    }
+}
+
+static bool wifiModeHasAp(wifi_mode_t mode) {
+    return mode == WIFI_AP || mode == WIFI_AP_STA;
+}
+
+static const char* wifiSnapshotState(DeviceState currentState, bool factoryModeActive) {
+    (void)currentState;
+    if (factoryModeActive) {
+        return "FACTORY";
+    }
+    wifi_mode_t mode = WiFi.getMode();
+    if ((mode == WIFI_STA || mode == WIFI_AP_STA) && WiFi.status() == WL_CONNECTED) {
+        return "STA_CONNECTED";
+    }
+    if (wifiModeHasAp(mode)) {
+        return "AP_CONFIG";
+    }
+    return "UNKNOWN";
+}
 
 bool wifiComm_init() {
+    resetPackedGuards();
     // Intentar usar credenciales guardadas para modo STA
     String storedSsid, storedPass;
     IPAddress ip;
@@ -90,9 +199,7 @@ void wifiComm_sendSamples(const AdsSample* samples,
             for (uint8_t ch = 0; ch < ADS_NUM_CHANNELS; ++ch) {
                 float qf = (float)s.ch[ch] * COUNTS_TO_PACKED;
                 int32_t q = (int32_t)(qf >= 0.0f ? qf + 0.5f : qf - 0.5f); // redondeo simple
-                if (q > INT16_MAX) q = INT16_MAX;
-                else if (q < INT16_MIN) q = INT16_MIN;
-                int16_t packed = (int16_t)q;
+                int16_t packed = sanitizePackedSample(d, ch, q);
                 udp.write((uint8_t*)&packed, sizeof(packed));
             }
         }
@@ -107,16 +214,23 @@ static bool isValidGain(uint8_t g) {
 
 void wifiComm_applyConfig(const AdsPersistentConfig& cfg, AdsManager& ads, uint8_t numDevices) {
     for (uint8_t d = 0; d < cfg.numDevices && d < numDevices; ++d) {
+        bool anyChannelUsesTestSignal = false;
         for (uint8_t ch = 0; ch < ADS_NUM_CHANNELS; ++ch) {
             AdsChannelConfig cfgCh;
             cfgCh.gain = cfg.dev[d].ch[ch].gain;
             cfgCh.powerDown = cfg.dev[d].ch[ch].powerDown;
             cfgCh.testSignal = cfg.dev[d].ch[ch].testSignal;
+            anyChannelUsesTestSignal = anyChannelUsesTestSignal || cfgCh.testSignal;
             if (!isValidGain(cfgCh.gain)) cfgCh.gain = 24;
             ads.setChannelConfig(d, ch, cfgCh);
+            filtering_setChannelProfile(d, ch, cfg.dev[d].ch[ch].filterProfile);
         }
         ads.setBiasSelection(d, cfg.dev[d].biasSensP, cfg.dev[d].biasSensN);
-        ads.setTestSignal(d, cfg.dev[d].testSignal);
+        AdsTestSignal testCfg = cfg.dev[d].testSignal;
+        if (anyChannelUsesTestSignal) {
+            testCfg.enable = true;
+        }
+        ads.setTestSignal(d, testCfg);
     }
 }
 
@@ -204,16 +318,28 @@ bool wifiComm_hasDestination() {
 }
 
 // Conectar como estación a una red WiFi; devuelve true y la IP obtenida.
-bool wifiComm_connectSta(const char* ssid, const char* password, IPAddress& outIp) {
-    if (!ssid || !password) return false;
+bool wifiComm_connectSta(const char* ssid, const char* password, IPAddress& outIp, String* outError) {
+    if (!ssid || !password) {
+        if (outError) *outError = "ERR WIFI PARAMS Faltan SSID o password";
+        return false;
+    }
+    if (ssid[0] == '\0') {
+        if (outError) *outError = "ERR WIFI PARAMS SSID vacio";
+        return false;
+    }
     udp.stop();
     s_udpStarted = false;
     s_destIp = IPAddress();
     s_destPort = 0;
+    resetPackedGuards();
 
     WiFi.disconnect(true, true);
     WiFi.mode(WIFI_STA);
-    WiFi.begin(ssid, password);
+    if (password[0] == '\0') {
+        WiFi.begin(ssid);
+    } else {
+        WiFi.begin(ssid, password);
+    }
 
     unsigned long start = millis();
     const unsigned long timeoutMs = 8000; // tiempo estándar de asociación
@@ -221,6 +347,7 @@ bool wifiComm_connectSta(const char* ssid, const char* password, IPAddress& outI
         delay(100);
     }
     if (WiFi.status() != WL_CONNECTED) {
+        if (outError) *outError = wifiStatusDetail(WiFi.status());
         return false;
     }
 
@@ -232,6 +359,69 @@ bool wifiComm_connectSta(const char* ssid, const char* password, IPAddress& outI
     return true;
 }
 
+bool wifiComm_connectStaKeepAp(const char* ssid, const char* password, IPAddress& outStaIp, IPAddress* outApIp, String* outError) {
+    if (!ssid || !password) {
+        if (outError) *outError = "ERR WIFI PARAMS Faltan SSID o password";
+        return false;
+    }
+    if (ssid[0] == '\0') {
+        if (outError) *outError = "ERR WIFI PARAMS SSID vacio";
+        return false;
+    }
+
+    const IPAddress prevDestIp = s_destIp;
+    const uint16_t prevDestPort = s_destPort;
+    const bool prevStartRequested = s_startRequested;
+    const bool prevStopRequested = s_stopRequested;
+    const bool prevConnRequested = s_connRequested;
+
+    wifi_mode_t prevMode = WiFi.getMode();
+    if (prevMode != WIFI_AP_STA) {
+        WiFi.mode(WIFI_AP_STA);
+        delay(100);
+    }
+    if (!wifiModeHasAp(prevMode)) {
+        if (!WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD)) {
+            if (outError) *outError = "ERR AP No se pudo mantener el AP activo";
+            return false;
+        }
+        delay(100);
+    }
+
+    WiFi.disconnect(false, true);
+    delay(100);
+    if (password[0] == '\0') {
+        WiFi.begin(ssid);
+    } else {
+        WiFi.begin(ssid, password);
+    }
+
+    unsigned long start = millis();
+    const unsigned long timeoutMs = 10000;
+    while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) {
+        delay(100);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+        if (outApIp) *outApIp = WiFi.softAPIP();
+        if (outError) *outError = wifiStatusDetail(WiFi.status());
+        return false;
+    }
+
+    outStaIp = WiFi.localIP();
+    if (outApIp) *outApIp = WiFi.softAPIP();
+
+    if (!s_udpStarted) {
+        udp.begin(PC_UDP_PORT);
+        s_udpStarted = true;
+    }
+    s_destIp = prevDestIp;
+    s_destPort = prevDestPort;
+    s_startRequested = prevStartRequested;
+    s_stopRequested = prevStopRequested;
+    s_connRequested = prevConnRequested;
+    return true;
+}
+
 // Arranca modo AP con las credenciales configuradas; devuelve IP del AP.
 bool wifiComm_startAp(IPAddress& outIp) {
     udp.stop();
@@ -240,6 +430,7 @@ bool wifiComm_startAp(IPAddress& outIp) {
     s_destPort = 0;
     s_startRequested = false;
     s_stopRequested  = false;
+    resetPackedGuards();
 
     WiFi.disconnect(true, true);
     WiFi.mode(WIFI_AP);
@@ -270,6 +461,14 @@ bool wifiComm_loadCredentials(String& ssid, String& password) {
     password = prefs.getString(WIFI_PREF_PASS_KEY, "");
     prefs.end();
     return !ssid.isEmpty();
+}
+
+bool wifiComm_clearCredentials() {
+    Preferences prefs;
+    if (!prefs.begin(WIFI_PREF_NS, false)) return false;
+    bool ok = prefs.clear();
+    prefs.end();
+    return ok;
 }
 
 // Enviar anuncio broadcast con la IP actual (para discovery en PC)
@@ -329,6 +528,7 @@ bool wifiComm_takeStartRequest() {
 bool wifiComm_takeStopRequest() {
     if (!s_stopRequested) return false;
     s_stopRequested = false;
+    resetPackedGuards();
     return true;
 }
 
@@ -339,22 +539,28 @@ bool wifiComm_takeConnRequest() {
     s_destPort = 0;
     s_startRequested = false;
     s_stopRequested = false;
+    resetPackedGuards();
     return true;
 }
 
-void wifiComm_sendConfigSnapshot(const AdsPersistentConfig& cfg, uint8_t numDevices) {
+void wifiComm_sendConfigSnapshot(const AdsPersistentConfig& cfg, uint8_t numDevices, DeviceState currentState, bool factoryModeActive) {
     if (!s_udpStarted || !s_destIp || s_destPort == 0) return;
     WiFiUDP cfgUdp;
     cfgUdp.beginPacket(s_destIp, s_destPort);
     cfgUdp.printf("CFG NUM_DEV %u\n", numDevices);
     cfgUdp.printf("CFG FS %u\n", FS_OUTPUT_HZ);
+    cfgUdp.printf("CFG BATT %u\n", batteryMonitor_readLevelByte());
+    cfgUdp.printf("CFG WIFI_STATE %s\n", wifiSnapshotState(currentState, factoryModeActive));
+    cfgUdp.printf("CFG STA_IP %s\n", WiFi.localIP().toString().c_str());
+    cfgUdp.printf("CFG AP_IP %s\n", WiFi.softAPIP().toString().c_str());
     for (uint8_t d = 0; d < cfg.numDevices && d < numDevices; ++d) {
         for (uint8_t ch = 0; ch < ADS_NUM_CHANNELS; ++ch) {
             uint8_t gain = cfg.dev[d].ch[ch].gain;
             bool test = cfg.dev[d].ch[ch].testSignal;
             bool pd   = cfg.dev[d].ch[ch].powerDown;
-            cfgUdp.printf("DEV %u CH %u GAIN %u TEST %u PD %u\n",
-                          d, ch, gain, test ? 1 : 0, pd ? 1 : 0);
+            const char* profileName = filtering_getProfileName(cfg.dev[d].ch[ch].filterProfile);
+            cfgUdp.printf("DEV %u CH %u GAIN %u TEST %u PD %u FILTER %s\n",
+                          d, ch, gain, test ? 1 : 0, pd ? 1 : 0, profileName);
         }
     }
     cfgUdp.endPacket();

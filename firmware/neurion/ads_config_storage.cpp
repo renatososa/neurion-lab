@@ -26,6 +26,7 @@ void adsConfig_setDefaults(AdsPersistentConfig& cfg, uint8_t numDevices) {
             cfg.dev[d].ch[ch].gain = 24;
             cfg.dev[d].ch[ch].powerDown = false;
             cfg.dev[d].ch[ch].testSignal = false;
+            cfg.dev[d].ch[ch].filterProfile = FILTER_PROFILE_ECG;
         }
     }
     cfg.crc32 = computeCrc32(reinterpret_cast<const uint8_t*>(&cfg), sizeof(cfg) - sizeof(cfg.crc32));
@@ -54,4 +55,12 @@ bool adsConfig_load(AdsPersistentConfig& cfg) {
     if (crc != cfg.crc32) return false;
     if (cfg.numDevices == 0 || cfg.numDevices > ADS_MAX_DEVICES) return false;
     return true;
+}
+
+bool adsConfig_clearStored() {
+    Preferences prefs;
+    if (!prefs.begin("ads_cfg", false)) return false;
+    bool ok = prefs.clear();
+    prefs.end();
+    return ok;
 }

@@ -1,8 +1,11 @@
 #include "ads1299.h"
 #include <SPI.h>
 
-// Igual que el sketch de prueba pero a 4 MHz para altas Fs
-static const SPISettings adsSpiSettings(4000000, MSBFIRST, SPI_MODE1);
+// Clock SPI conservador para validar integridad de lectura en prototipos/cableado largo
+static const SPISettings adsSpiSettings(2000000, MSBFIRST, SPI_MODE1);
+static constexpr bool ENABLE_SPI_FRAME_DEBUG = false;
+static uint32_t s_lastSpiFrameDebugMs[ADS_MAX_DEVICES] = {0};
+static constexpr uint32_t SPI_FRAME_DEBUG_COOLDOWN_MS = 250;
 
 // ---- Ads1299Device -------------------------------------------------------
 
@@ -81,16 +84,12 @@ bool Ads1299Device::init() {
     delay(2);
 
     // CONFIG1: Fs según FS_ADC_HZ, modo alta resolución, sin daisy
-    uint8_t drBits = 0x01; // default 8 kHz
+    uint8_t drBits = 0x04;
     switch (FS_ADC_HZ) {
-        case 16000: drBits = 0x00; break;
-        case 8000:  drBits = 0x01; break;
-        case 4000:  drBits = 0x02; break;
-        case 2000:  drBits = 0x03; break;
-        case 1000:  drBits = 0x04; break;
-        case 500:   drBits = 0x05; break;
-        case 250:   drBits = 0x06; break;
-        default:    drBits = 0x01; break; // valor por defecto seguro
+        case 250:  drBits = 0x06; break;
+        case 500:  drBits = 0x05; break;
+        case 1000: drBits = 0x04; break;
+        default:   drBits = 0x04; break;
     }
     uint8_t config1 = 0x90 | (drBits & 0x07); // bit7 HR=1, DR=bits2..0
     // CONFIG2: test signals OFF (se ajusta luego si se activa test)
@@ -145,7 +144,7 @@ bool Ads1299Device::init() {
     _id = id;
     Serial.print("ADS ID leido: 0x");
     Serial.println(id, HEX);
-    bool idOk = ((id & 0x0F) == 0x0E) || (id == 0x20); // algunos clones devuelven 0x20
+    bool idOk = (id == 0x3E);
     if (id == 0x00 || !idOk) {
         // Reintentar con reset HW global y SDATAC, como en el sketch de prueba
         Serial.println("Reintentando lectura de ID tras reset HW...");
@@ -169,7 +168,7 @@ bool Ads1299Device::init() {
         _id = id;
         Serial.print("ADS ID reintento: 0x");
         Serial.println(id, HEX);
-        idOk = ((id & 0x0F) == 0x0E) || (id == 0x20) || (id == 0x00); // acepta 0 en clones problemáticos
+        idOk = (id == 0x3E);
     }
 
     if (!idOk) {
@@ -183,7 +182,7 @@ bool Ads1299Device::init() {
 
 bool Ads1299Device::startConversions() {
     if (!_initialized) return false;
-    sendCommandToDevice(_csPin, ADS_CMD_RDATAC);
+    sendCommandToDevice(_csPin, ADS_CMD_SDATAC);
     return true;
 }
 
@@ -209,6 +208,8 @@ bool Ads1299Device::readSample(AdsSample &sample) {
     const uint8_t totalBytes = 3 + ADS_NUM_CHANNELS * 3;
     uint8_t buffer[3 + ADS_NUM_CHANNELS * 3];
 
+    SPI.transfer(ADS_CMD_RDATA);
+    delayMicroseconds(4);
     for (uint8_t i = 0; i < totalBytes; ++i) {
         buffer[i] = SPI.transfer(0x00);
     }
@@ -216,10 +217,49 @@ bool Ads1299Device::readSample(AdsSample &sample) {
     SPI.endTransaction();
     deselect();
 
+    bool shouldDebugFrame = false;
     uint8_t *p = buffer + 3; // saltar STATUS
     for (uint8_t ch = 0; ch < ADS_NUM_CHANNELS; ++ch) {
         sample.ch[ch] = ads_convert24bit(p);
+        if (sample.ch[ch] == 8388607L || sample.ch[ch] == (-8388607L - 1L)) {
+            shouldDebugFrame = true;
+        }
         p += 3;
+    }
+
+    if (ENABLE_SPI_FRAME_DEBUG && shouldDebugFrame) {
+        const uint32_t now = millis();
+        const uint8_t debugSlot = (_drdyPin < ADS_MAX_DEVICES) ? _drdyPin : 0;
+        if ((uint32_t)(now - s_lastSpiFrameDebugMs[debugSlot]) >= SPI_FRAME_DEBUG_COOLDOWN_MS) {
+            s_lastSpiFrameDebugMs[debugSlot] = now;
+            Serial.print("ADS FRAME DBG ms=");
+            Serial.print(now);
+            Serial.print(" cs=");
+            Serial.print(_csPin);
+            Serial.print(" drdy=");
+            Serial.print(_drdyPin);
+            Serial.print(" STATUS=");
+            Serial.print(buffer[0], HEX);
+            Serial.print(" ");
+            Serial.print(buffer[1], HEX);
+            Serial.print(" ");
+            Serial.println(buffer[2], HEX);
+            p = buffer + 3;
+            for (uint8_t ch = 0; ch < ADS_NUM_CHANNELS; ++ch) {
+                const int32_t value = sample.ch[ch];
+                Serial.print("  CH");
+                Serial.print(ch + 1);
+                Serial.print(" bytes=");
+                Serial.print(p[0], HEX);
+                Serial.print(" ");
+                Serial.print(p[1], HEX);
+                Serial.print(" ");
+                Serial.print(p[2], HEX);
+                Serial.print(" conv=");
+                Serial.println(value);
+                p += 3;
+            }
+        }
     }
 
     return true;
